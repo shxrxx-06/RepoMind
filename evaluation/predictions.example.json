@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "predictions": [
+    {
+      "question_id": "UNK-001",
+      "answer": "This cannot be known from the repository source alone because the future model, request, and retrieved evidence are not available.",
+      "evidence": [],
+      "uncertainty": "unknown",
+      "relationships": [],
+      "test_mappings": [],
+      "human_answer_correct": null
+    }
+  ]
+}
