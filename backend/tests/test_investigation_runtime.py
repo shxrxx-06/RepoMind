@@ -210,7 +210,7 @@ def test_same_repository_initializes_once_and_shares_cached_service(tmp_path, mo
     calls = 0
     calls_lock = Lock()
 
-    def prepare(repository_id, repository_root):
+    def prepare(repository_id, repository_root, fingerprint):
         nonlocal calls
         with calls_lock:
             calls += 1
@@ -232,7 +232,7 @@ def test_different_repositories_initialize_concurrently(tmp_path, monkeypatch):
         repository.mkdir()
     barrier = Barrier(2)
 
-    def prepare(repository_id, repository_root):
+    def prepare(repository_id, repository_root, fingerprint):
         barrier.wait(timeout=2)
         return RepositoryAnalysisResult(), tmp_path / f"{repository_id}.npz"
 
@@ -255,7 +255,7 @@ def test_failed_initialization_releases_repository_lock(tmp_path, monkeypatch):
     repository.mkdir()
     attempts = 0
 
-    def prepare(repository_id, repository_root):
+    def prepare(repository_id, repository_root, fingerprint):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -269,6 +269,49 @@ def test_failed_initialization_releases_repository_lock(tmp_path, monkeypatch):
 
     assert result is not None
     assert attempts == 2
+
+
+def test_repository_content_fingerprint_invalidates_cached_analysis(tmp_path, monkeypatch):
+    runtime = InvestigationRuntime()
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    source = repository / "module.py"
+    source.write_text("def first(): pass\n", encoding="utf-8")
+    built = []
+
+    def prepare(repository_id, repository_root, fingerprint):
+        result = RepositoryAnalysisResult()
+        built.append((fingerprint, result))
+        return result, tmp_path / f"{fingerprint}.npz"
+
+    monkeypatch.setattr(runtime, "_prepare_repository", prepare)
+    first = runtime.for_repository("repo", repository)
+    first_analysis = runtime._analyses["repo"]
+    source.write_text("def second(): pass\n", encoding="utf-8")
+    second = runtime.for_repository("repo", repository)
+
+    assert second is not first
+    assert runtime._analyses["repo"] is not first_analysis
+    assert len(built) == 2
+    assert built[0][0] != built[1][0]
+
+
+def test_explicit_invalidation_discards_all_repository_caches(tmp_path, monkeypatch):
+    runtime = InvestigationRuntime()
+    repository = tmp_path / "repo"
+    repository.mkdir()
+
+    def prepare(repository_id, repository_root, fingerprint):
+        return RepositoryAnalysisResult(), tmp_path / "store.npz"
+
+    monkeypatch.setattr(runtime, "_prepare_repository", prepare)
+    runtime.for_repository("repo", repository)
+    runtime.invalidate_repository("repo")
+
+    assert "repo" not in runtime._services
+    assert "repo" not in runtime._analyses
+    assert "repo" not in runtime._parsed_files
+    assert "repo" not in runtime._fingerprints
 
 
 def test_graph_analysis_is_cached_without_initializing_embedding_model(tmp_path, monkeypatch):

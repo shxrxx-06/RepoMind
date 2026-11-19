@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { getApiBaseUrl, ingestGithubRepository, listRepositories, uploadRepositoryZip } from "./api/repositories.js";
 import Brand from "./components/Brand.jsx";
 import InvestigationPanel from "./components/InvestigationPanel.jsx";
+import ImpactAnalysisPanel from "./components/ImpactAnalysisPanel.jsx";
 import RepositoryGraph from "./components/RepositoryGraph.jsx";
 import RepositoryOverview from "./components/RepositoryOverview.jsx";
 import RepositorySubmission from "./components/RepositorySubmission.jsx";
@@ -15,6 +16,8 @@ export default function App() {
   const [repositoriesError, setRepositoriesError] = useState("");
   const [investigationKey, setInvestigationKey] = useState(0);
   const [activeRepositoryId, setActiveRepositoryId] = useState("");
+  const [repositoryGraph, setRepositoryGraph] = useState(null);
+  const [impactTarget, setImpactTarget] = useState(null);
 
   useEffect(() => {
     listRepositories()
@@ -41,6 +44,7 @@ export default function App() {
         : await uploadRepositoryZip(value);
       setRepository(result);
       setActiveRepositoryId(result.repository_id);
+      setImpactTarget(null);
       setRepositories((current) => [
         {
           repository_id: result.repository_id,
@@ -67,6 +71,11 @@ export default function App() {
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  function changeSelectedRepository(repositoryId) {
+    setActiveRepositoryId(repositoryId);
+    setImpactTarget(null);
   }
 
   return (
@@ -111,13 +120,22 @@ export default function App() {
           repositories={repositories}
           repositoriesError={repositoriesError}
           selectedRepositoryId={activeRepositoryId}
-          onSelectedRepositoryChange={setActiveRepositoryId}
+          onSelectedRepositoryChange={changeSelectedRepository}
         />
 
         <RepositoryGraph
-          repositories={repositories}
           selectedRepositoryId={activeRepositoryId}
           repositoriesError={repositoriesError}
+          onGraphLoaded={setRepositoryGraph}
+          onImpactTarget={setImpactTarget}
+        />
+
+        <ImpactAnalysisPanel
+          selectedRepositoryId={activeRepositoryId}
+          initialTarget={impactTarget}
+          fileOptions={(repositoryGraph?.nodes || [])
+            .filter((node) => node.node_type === "File" && node.file_path)
+            .map((node) => node.file_path)}
         />
 
         <section className="how-it-works" aria-label="How RepoMind works">
@@ -138,7 +156,7 @@ export default function App() {
       <footer className="footer">
         <Brand compact />
         <span>Repository intelligence, grounded in your code.</span>
-        <span className="footer-version">RepoMind · Day 10</span>
+        <span className="footer-version">RepoMind · Day 11</span>
       </footer>
     </div>
   );

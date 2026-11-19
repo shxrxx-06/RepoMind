@@ -147,3 +147,27 @@ export function getRepositoryGraph(repositoryId) {
   graphRequests.set(repositoryId, pending);
   return pending;
 }
+
+export function analyzeRepositoryImpact(repositoryId, request) {
+  return send(
+    `/repositories/${encodeURIComponent(repositoryId)}/impact-analysis`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    false,
+  ).then((payload) => {
+    if (
+      !payload
+      || typeof payload !== "object"
+      || !payload.changed_component
+      || !Array.isArray(payload.directly_affected)
+      || !Array.isArray(payload.indirectly_affected)
+      || !Array.isArray(payload.affected_files)
+    ) {
+      throw new ApiError("The backend returned an impact report with an invalid structure.");
+    }
+    return payload;
+  });
+}

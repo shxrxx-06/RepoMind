@@ -14,10 +14,20 @@ from backend.app.graph.models import RepositoryAnalysisResult
 from backend.app.ingestion.github import clone_github_repository
 from backend.app.ingestion.scanner import scan_repository
 from backend.app.ingestion.zip_handler import extract_repository_zip
+from backend.app.intelligence.impact_analyzer import (
+    ChangeImpactAnalyzer,
+    ImpactFileNotInGraph,
+    ImpactSymbolNotFound,
+)
+from backend.app.intelligence.impact_models import (
+    ChangeImpactReport,
+    ImpactAnalysisRequest,
+)
 from backend.app.investigation.models import InvestigationRequest, InvestigationResponse
 from backend.app.services.investigation_runtime import (
     InvestigationRuntime,
     InvestigationRuntimeError,
+    RepositorySnapshotChanged,
 )
 from backend.app.services.repository_catalog import (
     load_repository_summary,
@@ -154,6 +164,69 @@ def _repository_graph_response(
             message = "Python source could not be parsed or read."
         errors.append(error.model_copy(update={"message": message}))
     return analysis.model_copy(update={"errors": errors})
+
+
+@router.post(
+    "/repositories/{repository_id}/impact-analysis",
+    response_model=ChangeImpactReport,
+)
+def analyze_repository_impact(
+    repository_id: str,
+    request: ImpactAnalysisRequest,
+) -> ChangeImpactReport:
+    """Report potentially affected components using the cached repository graph."""
+    try:
+        UUID(repository_id)
+    except ValueError as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    repository_root = settings.REPOSITORIES_DIR / repository_id
+    try:
+        repository_root = repository_root.resolve(strict=True)
+        repository_root.relative_to(settings.REPOSITORIES_DIR.resolve())
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    if not repository_root.is_dir():
+        raise HTTPException(404, "Repository was not found")
+
+    requested_path = repository_root.joinpath(*request.changed_file_path.split("/"))
+    try:
+        resolved_path = requested_path.resolve(strict=True)
+        resolved_path.relative_to(repository_root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404, "Changed file was not found in the repository") from exc
+    if not resolved_path.is_file():
+        raise HTTPException(404, "Changed file was not found in the repository")
+
+    try:
+        fingerprint_before = investigation_runtime.repository_fingerprint(repository_root)
+        analysis = investigation_runtime.analysis_for_repository(repository_id, repository_root)
+        report = ChangeImpactAnalyzer().analyze(
+            repository_id,
+            repository_root,
+            analysis,
+            request,
+        )
+        fingerprint_after = investigation_runtime.repository_fingerprint(repository_root)
+        if fingerprint_after != fingerprint_before:
+            raise RepositorySnapshotChanged(
+                "Repository contents changed during impact analysis"
+            )
+        return report
+    except ImpactFileNotInGraph as exc:
+        raise HTTPException(422, "Changed file is not represented in the Python repository graph") from exc
+    except ImpactSymbolNotFound as exc:
+        raise HTTPException(404, "Changed symbol was not found in that file") from exc
+    except RepositorySnapshotChanged as exc:
+        raise HTTPException(
+            409,
+            "Repository changed during impact analysis; retry against the updated snapshot",
+        ) from exc
+    except InvestigationRuntimeError as exc:
+        logger.exception("Unable to prepare change-impact analysis")
+        raise HTTPException(503, "Repository analysis is unavailable for impact analysis") from exc
+    except Exception as exc:
+        logger.exception("Repository impact analysis failed")
+        raise HTTPException(500, "Repository impact analysis failed") from exc
 
 
 @router.post("/repositories/upload")

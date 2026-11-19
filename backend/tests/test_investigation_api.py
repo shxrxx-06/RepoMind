@@ -10,6 +10,7 @@ from backend.app.graph.models import (
     GraphRelationship,
     RepositoryAnalysisResult,
 )
+from backend.app.intelligence.impact_models import ImpactAnalysisRequest
 from backend.app.investigation.models import (
     InvestigationRequest,
     InvestigationResponse,
@@ -64,6 +65,13 @@ class FakeRuntime:
         self.calls = []
         self.graph_calls = []
 
+    @staticmethod
+    def repository_fingerprint(repository_path):
+        return "|".join(
+            f"{path.relative_to(repository_path).as_posix()}:{path.read_bytes().hex()}"
+            for path in sorted(repository_path.rglob("*.py"))
+        )
+
     def for_repository(self, repository_id, repository_path):
         self.calls.append((repository_id, repository_path))
         if self.error:
@@ -90,6 +98,11 @@ class FakeRuntime:
                     start_line=3,
                     end_line=5,
                 ),
+                GraphNode(
+                    node_id="file:src/caller.py",
+                    node_type="File",
+                    file_path="src/caller.py",
+                ),
             ],
             relationships=[
                 GraphRelationship(
@@ -98,7 +111,14 @@ class FakeRuntime:
                     relationship_type="DEFINES",
                     source_lines=[],
                     resolution_status="resolved",
-                )
+                ),
+                GraphRelationship(
+                    source="file:src/caller.py",
+                    target="file:src/module.py",
+                    relationship_type="IMPORTS",
+                    source_lines=[9],
+                    resolution_status="internal",
+                ),
             ],
         )
 
@@ -203,13 +223,14 @@ def test_graph_endpoint_serializes_existing_nodes_and_relationships(tmp_path, mo
         "start_line": 3,
         "end_line": 5,
     }
-    assert payload["relationships"] == [{
+    assert payload["relationships"][0] == {
         "source": "file:src/module.py",
         "target": "symbol:src/module.py:run",
         "relationship_type": "DEFINES",
         "source_lines": [],
         "resolution_status": "resolved",
-    }]
+    }
+    assert payload["relationships"][1]["relationship_type"] == "IMPORTS"
 
 
 def test_graph_endpoint_rejects_invalid_and_missing_repository_ids(tmp_path, monkeypatch):
@@ -259,3 +280,86 @@ def test_graph_response_sanitizes_local_filesystem_paths(tmp_path):
 
     assert result.errors[0].message == "Python source could not be parsed or read."
     assert str(repository_path) not in result.errors[0].message
+
+
+def test_impact_endpoint_returns_serialized_incoming_impact_report(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    repository = tmp_path / repository_id
+    (repository / "src").mkdir(parents=True)
+    (repository / "src" / "module.py").write_text("def run(): pass\n", encoding="utf-8")
+    (repository / "src" / "caller.py").write_text("import src.module\n", encoding="utf-8")
+    runtime = FakeRuntime()
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(routes, "investigation_runtime", runtime)
+
+    response = routes.analyze_repository_impact(
+        repository_id,
+        ImpactAnalysisRequest(changed_file_path="src/module.py"),
+    )
+
+    payload = response.model_dump(mode="json")
+    assert runtime.graph_calls == [(repository_id, repository.resolve())]
+    assert payload["changed_component"]["node_id"] == "file:src/module.py"
+    assert payload["directly_affected"][0]["node"]["file_path"] == "src/caller.py"
+    assert payload["directly_affected"][0]["paths"][0]["relationships"][0]["source_lines"] == [9]
+
+
+def test_impact_endpoint_validates_repository_file_and_symbol_inputs(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    repository = tmp_path / repository_id
+    (repository / "src").mkdir(parents=True)
+    (repository / "src" / "module.py").write_text("def run(): pass\n", encoding="utf-8")
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    runtime = FakeRuntime()
+    monkeypatch.setattr(routes, "investigation_runtime", runtime)
+
+    with pytest.raises(HTTPException) as invalid_id:
+        routes.analyze_repository_impact(
+            "bad-id", ImpactAnalysisRequest(changed_file_path="src/module.py")
+        )
+    with pytest.raises(HTTPException) as missing_file:
+        routes.analyze_repository_impact(
+            repository_id, ImpactAnalysisRequest(changed_file_path="src/missing.py")
+        )
+    with pytest.raises(HTTPException) as missing_symbol:
+        routes.analyze_repository_impact(
+            repository_id,
+            ImpactAnalysisRequest(
+                changed_file_path="src/module.py", qualified_symbol_name="absent"
+            ),
+        )
+
+    assert invalid_id.value.status_code == 404
+    assert missing_file.value.status_code == 404
+    assert missing_symbol.value.status_code == 404
+
+
+def test_impact_endpoint_rejects_repository_changes_during_analysis(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    repository = tmp_path / repository_id
+    (repository / "src").mkdir(parents=True)
+    source = repository / "src" / "module.py"
+    source.write_text("def run(): pass\n", encoding="utf-8")
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(routes, "investigation_runtime", FakeRuntime())
+
+    original_analyzer = routes.ChangeImpactAnalyzer
+
+    class MutatingAnalyzer:
+        def analyze(self, *args, **kwargs):
+            result = original_analyzer().analyze(*args, **kwargs)
+            source.write_text("def run(): return True\n", encoding="utf-8")
+            return result
+
+    monkeypatch.setattr(routes, "ChangeImpactAnalyzer", MutatingAnalyzer)
+
+    with pytest.raises(HTTPException) as changed:
+        routes.analyze_repository_impact(
+            repository_id,
+            ImpactAnalysisRequest(changed_file_path="src/module.py"),
+        )
+
+    assert changed.value.status_code == 409
+    assert changed.value.detail == (
+        "Repository changed during impact analysis; retry against the updated snapshot"
+    )

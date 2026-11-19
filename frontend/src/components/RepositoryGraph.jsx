@@ -47,36 +47,126 @@ function RepositoryNode({ data, selected }) {
 
 const nodeTypes = { repository: memo(RepositoryNode) };
 
-function graphLayout(nodes, relationships) {
-  const outgoing = new Map(nodes.map((node) => [node.node_id, []]));
+function prioritizedNodeSelection(nodes, relationships, seedIds, limit) {
+  const byId = new Map(nodes.map((node) => [node.node_id, node]));
+  const adjacency = new Map(nodes.map((node) => [node.node_id, new Set()]));
   for (const edge of relationships) {
-    outgoing.get(edge.source)?.push(edge.target);
+    if (!byId.has(edge.source) || !byId.has(edge.target)) continue;
+    adjacency.get(edge.source).add(edge.target);
+    adjacency.get(edge.target).add(edge.source);
   }
-  const depth = new Map();
-  const queue = nodes.filter((node) => node.node_type === "File").map((node) => node.node_id).sort();
-  queue.forEach((nodeId) => depth.set(nodeId, 0));
-  for (let index = 0; index < queue.length; index += 1) {
-    const current = queue[index];
-    for (const target of outgoing.get(current) || []) {
-      if (!depth.has(target)) {
-        depth.set(target, depth.get(current) + 1);
-        queue.push(target);
+  const degree = (id) => adjacency.get(id)?.size || 0;
+  const compareByConnection = (left, right) => degree(right) - degree(left) || left.localeCompare(right);
+  const chosen = [];
+  const included = new Set();
+  const expand = (seeds) => {
+    let frontier = [...new Set(seeds)].filter((id) => byId.has(id)).sort(compareByConnection);
+    while (frontier.length && chosen.length < limit) {
+      const next = [];
+      for (const id of frontier) {
+        if (included.has(id)) continue;
+        included.add(id);
+        chosen.push(byId.get(id));
+        for (const neighbor of adjacency.get(id) || []) {
+          if (!included.has(neighbor)) next.push(neighbor);
+        }
+        if (chosen.length >= limit) break;
+      }
+      frontier = [...new Set(next)].sort(compareByConnection);
+    }
+  };
+
+  expand(seedIds);
+
+  const components = [];
+  const visited = new Set();
+  for (const node of nodes) {
+    if (visited.has(node.node_id)) continue;
+    const component = [];
+    const queue = [node.node_id];
+    visited.add(node.node_id);
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      component.push(current);
+      for (const neighbor of adjacency.get(current) || []) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
       }
     }
+    components.push(component);
   }
-  const maxDepth = Math.max(0, ...depth.values());
-  const layers = new Map();
+  components.sort((left, right) => right.length - left.length || left[0].localeCompare(right[0]));
+  for (const component of components) {
+    if (chosen.length >= limit) break;
+    const roots = component.filter((id) => byId.get(id).node_type === "File");
+    const seeds = (roots.length ? roots : component).slice().sort(compareByConnection).slice(0, 1);
+    expand(seeds);
+  }
+  return chosen;
+}
+
+function graphLayout(nodes, relationships) {
+  const byId = new Map(nodes.map((node) => [node.node_id, node]));
+  const adjacency = new Map(nodes.map((node) => [node.node_id, new Set()]));
+  for (const edge of relationships) {
+    if (!byId.has(edge.source) || !byId.has(edge.target)) continue;
+    adjacency.get(edge.source).add(edge.target);
+    adjacency.get(edge.target).add(edge.source);
+  }
+  const components = [];
+  const visited = new Set();
   for (const node of nodes) {
-    const layer = depth.get(node.node_id) ?? maxDepth + 1;
-    if (!layers.has(layer)) layers.set(layer, []);
-    layers.get(layer).push(node);
+    if (visited.has(node.node_id)) continue;
+    const component = [];
+    const queue = [node.node_id];
+    visited.add(node.node_id);
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      component.push(current);
+      for (const neighbor of adjacency.get(current) || []) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+    components.push(component);
   }
+  components.sort((left, right) => right.length - left.length || left[0].localeCompare(right[0]));
+
   const positions = new Map();
-  for (const [layer, layerNodes] of layers) {
-    layerNodes.sort((left, right) => left.node_id.localeCompare(right.node_id));
-    layerNodes.forEach((node, index) => {
-      positions.set(node.node_id, { x: 100 + layer * 290, y: 80 + index * 125 });
-    });
+  let componentTop = 70;
+  for (const component of components) {
+    const roots = component.filter((id) => byId.get(id).node_type === "File").sort();
+    const starts = roots.length ? roots : [component.slice().sort()[0]];
+    const depth = new Map(starts.map((id) => [id, 0]));
+    const queue = [...starts];
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      for (const neighbor of [...(adjacency.get(current) || [])].sort()) {
+        if (!depth.has(neighbor)) {
+          depth.set(neighbor, depth.get(current) + 1);
+          queue.push(neighbor);
+        }
+      }
+    }
+    const layers = new Map();
+    for (const id of component) {
+      const layer = depth.get(id) ?? 0;
+      if (!layers.has(layer)) layers.set(layer, []);
+      layers.get(layer).push(id);
+    }
+    let layerHeight = 1;
+    for (const [layer, ids] of layers) {
+      ids.sort((left, right) => left.localeCompare(right));
+      layerHeight = Math.max(layerHeight, ids.length);
+      ids.forEach((id, index) => {
+        positions.set(id, { x: 90 + layer * 290, y: componentTop + index * 118 });
+      });
+    }
+    componentTop += layerHeight * 118 + 110;
   }
   return positions;
 }
@@ -103,11 +193,11 @@ function TypeFilter({ title, options, selected, onChange }) {
   );
 }
 
-function FlowCanvas({ nodes, edges, onNodeClick, onPaneClick }) {
+function FlowCanvas({ nodes, edges, viewKey, onNodeClick, onPaneClick }) {
   const { fitView } = useReactFlow();
   useEffect(() => {
-    if (nodes.length) fitView({ padding: 0.18 });
-  }, [fitView, nodes.length, edges.length]);
+    if (nodes.length) fitView({ padding: 0.18, duration: 140 });
+  }, [fitView, viewKey]);
   return (
     <ReactFlow
       nodes={nodes}
@@ -115,7 +205,6 @@ function FlowCanvas({ nodes, edges, onNodeClick, onPaneClick }) {
       nodeTypes={nodeTypes}
       onNodeClick={onNodeClick}
       onPaneClick={onPaneClick}
-      fitView
       minZoom={0.08}
       maxZoom={2}
       nodesDraggable
@@ -135,7 +224,7 @@ function FlowCanvas({ nodes, edges, onNodeClick, onPaneClick }) {
   );
 }
 
-function NodeDetails({ node, relationships, nodeById }) {
+function NodeDetails({ node, relationships, nodeById, onImpactTarget }) {
   if (!node) {
     return <aside className="graph-details"><span className="eyebrow">NODE DETAILS</span><p>Select a node to inspect its metadata and connected relationships.</p></aside>;
   }
@@ -150,6 +239,14 @@ function NodeDetails({ node, relationships, nodeById }) {
         {node.symbol_type && <><dt>Symbol type</dt><dd>{node.symbol_type}</dd></>}
         {node.start_line != null && <><dt>Lines</dt><dd>{node.start_line}{node.end_line != null && node.end_line !== node.start_line ? `–${node.end_line}` : ""}</dd></>}
       </dl>
+      {node.file_path && <button
+        className="graph-impact-button"
+        type="button"
+        onClick={() => onImpactTarget({
+          changed_file_path: node.file_path,
+          qualified_symbol_name: node.node_type === "File" ? "" : node.qualified_name || "",
+        })}
+      >Use as change-impact target</button>}
       <div className="graph-related-title">Connected relationships <span>{related.length}</span></div>
       {related.length ? (
         <ul>{related.map((edge, index) => {
@@ -168,7 +265,12 @@ function NodeDetails({ node, relationships, nodeById }) {
   );
 }
 
-export default function RepositoryGraph({ repositories, selectedRepositoryId, repositoriesError }) {
+export default function RepositoryGraph({
+  selectedRepositoryId,
+  repositoriesError,
+  onGraphLoaded,
+  onImpactTarget,
+}) {
   const [graph, setGraph] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -179,29 +281,51 @@ export default function RepositoryGraph({ repositories, selectedRepositoryId, re
 
   useEffect(() => {
     setGraph(null);
+    onGraphLoaded(null);
     setSelectedNodeId("");
     setError("");
     if (!selectedRepositoryId) return undefined;
     let active = true;
     setLoading(true);
     getRepositoryGraph(selectedRepositoryId)
-      .then((result) => { if (active) setGraph(result); })
+      .then((result) => {
+        if (active) {
+          setGraph(result);
+          onGraphLoaded(result);
+        }
+      })
       .catch((requestError) => { if (active) setError(requestError.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [selectedRepositoryId]);
+  }, [selectedRepositoryId, onGraphLoaded]);
 
   const allNodes = graph?.nodes || [];
   const allEdges = graph?.relationships || [];
   const searchTerm = search.trim().toLocaleLowerCase();
-  const matchingNodes = useMemo(() => allNodes
+  const eligibleNodes = useMemo(() => allNodes
     .filter((node) => nodeTypesSelected.includes(node.node_type))
-    .filter((node) => !searchTerm || [node.qualified_name, node.file_path, node.node_id]
-      .some((value) => value?.toLocaleLowerCase().includes(searchTerm)))
     .sort((left, right) => left.node_id.localeCompare(right.node_id)),
-  [allNodes, nodeTypesSelected, searchTerm]);
-  const overflow = matchingNodes.length > MAX_VISIBLE_NODES;
-  const visibleNodes = overflow ? matchingNodes.slice(0, MAX_VISIBLE_NODES) : matchingNodes;
+  [allNodes, nodeTypesSelected]);
+  const matchingNodes = searchTerm
+    ? eligibleNodes.filter((node) => [node.qualified_name, node.file_path, node.node_id]
+      .some((value) => value?.toLocaleLowerCase().includes(searchTerm)))
+    : [];
+  const layoutEdges = useMemo(
+    () => allEdges.filter((edge) => edgeTypesSelected.includes(edge.relationship_type)),
+    [allEdges, edgeTypesSelected],
+  );
+  const seedIds = [
+    ...(searchTerm ? matchingNodes.map((node) => node.node_id) : []),
+    ...(eligibleNodes.some((node) => node.node_id === selectedNodeId) ? [selectedNodeId] : []),
+  ];
+  const seedKey = seedIds.slice().sort().join("|");
+  const visibleNodes = useMemo(
+    () => searchTerm && matchingNodes.length === 0
+      ? []
+      : prioritizedNodeSelection(eligibleNodes, layoutEdges, seedIds, MAX_VISIBLE_NODES),
+    [eligibleNodes, layoutEdges, seedKey, searchTerm, matchingNodes.length],
+  );
+  const overflow = visibleNodes.length < eligibleNodes.length && (!searchTerm || matchingNodes.length > 0);
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.node_id));
   const visibleRelationships = allEdges.filter((edge) => (
     edgeTypesSelected.includes(edge.relationship_type)
@@ -237,6 +361,7 @@ export default function RepositoryGraph({ repositories, selectedRepositoryId, re
       animated: edge.relationship_type === "CALLS" && connected,
     };
   });
+  const fitKey = `${selectedRepositoryId}|${flowNodes.map((node) => `${node.id}:${node.position.x},${node.position.y}`).join(";")}|${flowEdges.map((edge) => edge.id).join(";")}`;
 
   return (
     <section className="repository-graph-section" aria-labelledby="repository-graph-title">
@@ -261,13 +386,14 @@ export default function RepositoryGraph({ repositories, selectedRepositoryId, re
             {NODE_TYPES.map((type) => <span key={type}><i style={{ background: NODE_COLORS[type] }} />{type}</span>)}
             {EDGE_TYPES.map((type) => <span key={type}><i className="legend-line" style={{ background: EDGE_COLORS[type] }} />{type}</span>)}
           </div>
-          {overflow && <p className="graph-limit-note" role="status">Showing {visibleNodes.length} of {matchingNodes.length} matching nodes. Search or filter the graph to narrow the view.</p>}
+          {overflow && <p className="graph-limit-note" role="status">Showing {visibleNodes.length} of {eligibleNodes.length} nodes after filters. The view prioritizes search or selection neighbors, then larger connected components. Refine the search or filters to explore other areas.</p>}
+          {searchTerm && <p className="graph-search-note">Search matched {matchingNodes.length} nodes; nearby connected nodes are included for context.</p>}
           {visibleNodes.length === 0 ? <div className="graph-state">No nodes match the current search and filters.</div> : (
             <div className="graph-workspace">
               <div className="graph-canvas" aria-label="Interactive repository graph">
-                <ReactFlowProvider><FlowCanvas nodes={flowNodes} edges={flowEdges} onNodeClick={(_, node) => setSelectedNodeId(node.id)} onPaneClick={() => setSelectedNodeId("")} /></ReactFlowProvider>
+                <ReactFlowProvider><FlowCanvas nodes={flowNodes} edges={flowEdges} viewKey={fitKey} onNodeClick={(_, node) => setSelectedNodeId(node.id)} onPaneClick={() => setSelectedNodeId("")} /></ReactFlowProvider>
               </div>
-              <NodeDetails node={selectedNode} relationships={visibleRelationships} nodeById={nodeById} />
+              <NodeDetails node={selectedNode} relationships={visibleRelationships} nodeById={nodeById} onImpactTarget={onImpactTarget} />
             </div>
           )}
           <p className="graph-count-note">Showing {visibleNodes.length} of {allNodes.length} nodes · {visibleRelationships.length} visible relationships of {allEdges.length} total</p>
