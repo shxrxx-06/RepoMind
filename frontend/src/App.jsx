@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { getApiBaseUrl, ingestGithubRepository, uploadRepositoryZip } from "./api/repositories.js";
+import { getApiBaseUrl, ingestGithubRepository, listRepositories, uploadRepositoryZip } from "./api/repositories.js";
 import Brand from "./components/Brand.jsx";
+import InvestigationPanel from "./components/InvestigationPanel.jsx";
 import RepositoryOverview from "./components/RepositoryOverview.jsx";
 import RepositorySubmission from "./components/RepositorySubmission.jsx";
 
@@ -9,6 +10,18 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [repository, setRepository] = useState(null);
+  const [repositories, setRepositories] = useState([]);
+  const [repositoriesError, setRepositoriesError] = useState("");
+  const [investigationKey, setInvestigationKey] = useState(0);
+
+  useEffect(() => {
+    listRepositories()
+      .then((items) => {
+        setRepositories(items);
+        setRepositoriesError("");
+      })
+      .catch((requestError) => setRepositoriesError(requestError.message));
+  }, []);
 
   async function submitRepository({ type, value }) {
     if (isSubmitting) return;
@@ -20,6 +33,14 @@ export default function App() {
         ? await ingestGithubRepository(value)
         : await uploadRepositoryZip(value);
       setRepository(result);
+      setInvestigationKey((key) => key + 1);
+      try {
+        const items = await listRepositories();
+        setRepositories(items);
+        setRepositoriesError("");
+      } catch (requestError) {
+        setRepositoriesError(requestError.message);
+      }
     } catch (submissionError) {
       setError(submissionError.message || "Repository ingestion failed. Please try again.");
     } finally {
@@ -64,6 +85,13 @@ export default function App() {
           </div>
         </section>
 
+        <InvestigationPanel
+          key={investigationKey}
+          repositories={repositories}
+          repositoriesError={repositoriesError}
+          initialRepositoryId={repository?.repository_id || ""}
+        />
+
         <section className="how-it-works" aria-label="How RepoMind works">
           <div className="how-heading">
             <span className="eyebrow">A CLEARER STARTING POINT</span>
@@ -82,7 +110,7 @@ export default function App() {
       <footer className="footer">
         <Brand compact />
         <span>Repository intelligence, grounded in your code.</span>
-        <span className="footer-version">RepoMind · Day 8</span>
+        <span className="footer-version">RepoMind · Day 9</span>
       </footer>
     </div>
   );

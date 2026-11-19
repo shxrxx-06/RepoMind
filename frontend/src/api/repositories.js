@@ -27,7 +27,7 @@ function describeDetail(detail) {
   return "The backend could not process this request.";
 }
 
-async function send(path, options) {
+async function send(path, options, requireRepositoryMetadata = true) {
   let response;
   try {
     response = await fetch(`${API_ROOT}${path}`, options);
@@ -47,7 +47,7 @@ async function send(path, options) {
     const detail = describeDetail(payload.detail);
     throw new ApiError(detail, response.status);
   }
-  if (!payload || typeof payload !== "object" || !payload.metadata) {
+  if (!payload || typeof payload !== "object" || (requireRepositoryMetadata && !payload.metadata)) {
     throw new ApiError("The backend response did not include repository metadata.", response.status);
   }
   return payload;
@@ -68,4 +68,51 @@ export function uploadRepositoryZip(file) {
     method: "POST",
     body: form,
   });
+}
+
+export async function listRepositories() {
+  let response;
+  try {
+    response = await fetch(`${API_ROOT}/repositories`);
+  } catch {
+    const destination = API_BASE_URL || "the configured API origin";
+    throw new ApiError(`Could not reach the RepoMind backend at ${destination}. Check that it is running and try again.`);
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    if (response.ok) throw new ApiError("The backend returned an invalid repository list response.", response.status);
+    payload = {};
+  }
+  if (!response.ok) throw new ApiError(describeDetail(payload.detail), response.status);
+  if (!Array.isArray(payload)) {
+    throw new ApiError("The backend repository list response must be an array.", response.status);
+  }
+  const validList = payload.every((repository) => (
+    repository !== null
+    && typeof repository === "object"
+    && typeof repository.repository_id === "string"
+    && repository.repository_id.trim().length > 0
+    && Number.isInteger(repository.total_files)
+    && repository.total_files >= 0
+    && repository.language_distribution !== null
+    && typeof repository.language_distribution === "object"
+    && !Array.isArray(repository.language_distribution)
+    && Object.entries(repository.language_distribution).every(([language, count]) => (
+      language.length > 0 && Number.isInteger(count) && count >= 0
+    ))
+  ));
+  if (!validList) {
+    throw new ApiError("The backend repository list contains an item with an invalid shape.", response.status);
+  }
+  return payload;
+}
+
+export async function investigateRepository(repositoryId, question) {
+  return send(`/repositories/${encodeURIComponent(repositoryId)}/investigate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  }, false);
 }

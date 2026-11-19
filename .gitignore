@@ -13,6 +13,8 @@ __pycache__/
 # Generated data
 data/repos/
 data/tmp/
+data/intelligence/
+data/repository_metadata/
 node_modules/
 frontend/dist/
 

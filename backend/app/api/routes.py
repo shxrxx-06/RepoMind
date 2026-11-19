@@ -3,6 +3,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder
@@ -12,18 +13,100 @@ from backend.app.core.config import settings
 from backend.app.ingestion.github import clone_github_repository
 from backend.app.ingestion.scanner import scan_repository
 from backend.app.ingestion.zip_handler import extract_repository_zip
+from backend.app.investigation.models import InvestigationRequest, InvestigationResponse
+from backend.app.services.investigation_runtime import (
+    InvestigationRuntime,
+    InvestigationRuntimeError,
+)
+from backend.app.services.repository_catalog import (
+    load_repository_summary,
+    save_repository_summary,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["Repository"])
 logger = logging.getLogger(__name__)
+investigation_runtime = InvestigationRuntime()
 
 
 class GitHubRequest(BaseModel):
     url: HttpUrl
 
 
+class RepositoryListItem(BaseModel):
+    repository_id: str
+    total_files: int
+    language_distribution: dict[str, int]
+
+
 @router.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "healthy", "service": "RepoMind API"}
+
+
+@router.get("/repositories", response_model=list[RepositoryListItem])
+def list_repositories() -> list[RepositoryListItem]:
+    """List repository directories that were successfully ingested."""
+    repositories = []
+    for path in sorted(settings.REPOSITORIES_DIR.iterdir(), key=lambda item: item.name):
+        if not path.is_dir():
+            continue
+        try:
+            UUID(path.name)
+            resolved_path = path.resolve()
+            resolved_path.relative_to(settings.REPOSITORIES_DIR.resolve())
+            metadata = load_repository_summary(path.name)
+            if metadata is None:
+                metadata = scan_repository(resolved_path)
+                _persist_repository_summary(path.name, metadata)
+        except (ValueError, OSError):
+            continue
+        repositories.append(
+            RepositoryListItem(
+                repository_id=path.name,
+                total_files=metadata["total_files"],
+                language_distribution=metadata["language_distribution"],
+            )
+        )
+    return repositories
+
+
+def _persist_repository_summary(repository_id: str, metadata: dict) -> None:
+    try:
+        save_repository_summary(repository_id, metadata)
+    except Exception:
+        logger.exception("Unable to persist repository listing metadata")
+
+
+@router.post(
+    "/repositories/{repository_id}/investigate",
+    response_model=InvestigationResponse,
+)
+def investigate_repository(
+    repository_id: str,
+    request: InvestigationRequest,
+) -> InvestigationResponse:
+    """Run the existing investigation service against an ingested repository."""
+    try:
+        UUID(repository_id)
+    except ValueError as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    repository_path = (settings.REPOSITORIES_DIR / repository_id).resolve()
+    try:
+        repository_path.relative_to(settings.REPOSITORIES_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    if not repository_path.is_dir():
+        raise HTTPException(404, "Repository was not found")
+    try:
+        service = investigation_runtime.for_repository(repository_id, repository_path)
+        response = service.investigate(request)
+        return response
+    except InvestigationRuntimeError as exc:
+        logger.exception("Unable to prepare repository investigation")
+        raise HTTPException(503, "Repository intelligence is unavailable for investigation") from exc
+    except Exception as exc:
+        logger.exception("Repository investigation failed")
+        raise HTTPException(500, "Repository investigation failed") from exc
 
 
 @router.post("/repositories/upload")
@@ -44,11 +127,13 @@ async def upload_repository(file: UploadFile = File(...)) -> dict:  # noqa: B008
                 temp.write(chunk)
         repository_path = extract_repository_zip(temp_path)
         metadata = scan_repository(repository_path)
-        return {
+        response = {
             "message": "Repository uploaded and ingested successfully",
             "repository_id": repository_path.name,
             "metadata": metadata,
         }
+        _persist_repository_summary(repository_path.name, metadata)
+        return response
     except HTTPException:
         if repository_path:
             shutil.rmtree(repository_path, ignore_errors=True)
@@ -91,6 +176,7 @@ def ingest_github_repository(request: GitHubRequest) -> dict:
             "metadata": metadata,
         }
         jsonable_encoder(response)
+        _persist_repository_summary(repository_path.name, metadata)
         logger.info(
             "GitHub endpoint: response constructed for repository %s",
             repository_path.name,

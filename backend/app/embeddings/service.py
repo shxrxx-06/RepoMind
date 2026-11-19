@@ -54,6 +54,24 @@ class EmbeddingService:
         self._dimension = dimension
         return dimension
 
+    @property
+    def known_embedding_dimension(self) -> int | None:
+        """Return a known dimension without loading an as-yet-unloaded model."""
+        if self._dimension is not None:
+            return self._dimension
+        if self._model is not None:
+            dimension = self._read_dimension(self._model)
+            if dimension is not None and dimension > 0:
+                self._dimension = dimension
+                return dimension
+        cached = self._model_cache.get((self.model_name, self.device))
+        if cached is not None:
+            dimension = self._read_dimension(cached)
+            if dimension is not None and dimension > 0:
+                self._dimension = dimension
+                return dimension
+        return None
+
     def embed_document(self, document: CodeDocument) -> CodeEmbedding:
         """Embed one document using the same batching and validation path."""
         return self.embed_documents([document]).embeddings[0]
