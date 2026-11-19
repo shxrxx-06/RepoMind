@@ -159,9 +159,18 @@ class HybridRetriever:
 
         scored: list[tuple[CodeEmbedding, float]] = []
         for document in documents:
-            vector = np.asarray(document.vector, dtype=np.float32)
+            try:
+                vector = np.asarray(document.vector, dtype=np.float32)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                vector.ndim != 1
+                or vector.shape[0] != query_vector.shape[0]
+                or not np.isfinite(vector).all()
+            ):
+                continue
             norm = float(np.linalg.norm(vector))
-            if vector.ndim != 1 or vector.shape[0] != query_vector.shape[0] or norm == 0:
+            if not np.isfinite(norm) or norm == 0:
                 continue
             score = float(np.dot(query_vector, vector) / norm)
             if np.isfinite(score):

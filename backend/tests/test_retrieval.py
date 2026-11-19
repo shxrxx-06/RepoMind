@@ -83,6 +83,40 @@ def test_semantic_retrieval_returns_cosine_top_k(tmp_path):
     assert query_service.calls == ["account service"]
 
 
+@pytest.mark.parametrize("invalid_value", [float("nan"), float("inf"), float("-inf")])
+def test_semantic_search_skips_non_finite_stored_vectors(tmp_path, invalid_value):
+    engine = HybridRetriever(tmp_path / "unused.npz", FakeQueryEmbeddingService())
+    invalid = _embedding("invalid", "Service.invalid", [1.0, 0.0]).model_copy(
+        update={"vector": [invalid_value, 0.0]}
+    )
+    valid = _embedding("valid", "Service.valid", [0.8, 0.6])
+
+    ranked, warning = engine._semantic_search("find valid", [invalid, valid], limit=5)
+
+    assert warning is None
+    assert [document.document_id for document, _score in ranked] == ["valid"]
+
+
+def test_valid_vectors_keep_correct_ranking_when_invalid_vectors_are_present(tmp_path):
+    engine = HybridRetriever(tmp_path / "unused.npz", FakeQueryEmbeddingService())
+    documents = [
+        _embedding("nan", "Service.nan", [1.0, 0.0]).model_copy(
+            update={"vector": [float("nan"), 0.0]}
+        ),
+        _embedding("best", "Service.best", [1.0, 0.0]),
+        _embedding("infinity", "Service.infinity", [1.0, 0.0]).model_copy(
+            update={"vector": [float("-inf"), 0.0]}
+        ),
+        _embedding("next", "Service.next", [0.8, 0.6]),
+    ]
+
+    ranked, warning = engine._semantic_search("find best", documents, limit=5)
+
+    assert warning is None
+    assert [document.document_id for document, _score in ranked] == ["best", "next"]
+    assert [score for _document, score in ranked] == pytest.approx([1.0, 0.8])
+
+
 def test_keyword_exact_identifier_and_case_insensitive_match(tmp_path):
     docs = [
         _embedding("exact", "UserService.authenticate", [1.0, 0.0]),
