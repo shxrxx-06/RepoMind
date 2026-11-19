@@ -7,6 +7,8 @@ import pytest
 from backend.app.embeddings.models import CodeDocument, CodeEmbedding, EmbeddingBatch
 from backend.app.graph.models import RepositoryAnalysisResult
 from backend.app.parsing.models import ParsedFile
+from backend.app.rag.models import GroundedPrompt
+from backend.app.rag.provider import ConfiguredLLMProvider, MockLLMProvider
 from backend.app.services.investigation_runtime import (
     InvestigationRuntime,
     InvestigationRuntimeError,
@@ -223,6 +225,33 @@ def test_same_repository_initializes_once_and_shares_cached_service(tmp_path, mo
 
     assert calls == 1
     assert all(result is results[0] for result in results)
+
+
+def test_runtime_injects_configured_llm_provider(tmp_path, monkeypatch):
+    runtime = InvestigationRuntime()
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    monkeypatch.setattr(runtime, "_repository_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_repository",
+        lambda *_args: (RepositoryAnalysisResult(), tmp_path / "embeddings.npz"),
+    )
+    monkeypatch.setattr(
+        "backend.app.services.investigation_runtime.settings.LLM_PROVIDER", "mock"
+    )
+    monkeypatch.setattr(
+        "backend.app.services.investigation_runtime.settings.LLM_MOCK_RESPONSE",
+        "configured mock",
+    )
+
+    service = runtime.for_repository("repository-id", repository)
+
+    assert isinstance(service.provider, ConfiguredLLMProvider)
+    assert service.provider.generate(
+        GroundedPrompt(system_instructions="", user_message="")
+    ) == "configured mock"
+    assert isinstance(service.provider._provider, MockLLMProvider)
 
 
 def test_different_repositories_initialize_concurrently(tmp_path, monkeypatch):

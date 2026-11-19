@@ -1,5 +1,7 @@
 from pathlib import Path
+from typing import Literal
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -15,6 +17,13 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 1
     MAX_REPOSITORY_FILES: int = 10_000
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    LLM_PROVIDER: Literal["mock", "openai"] = "mock"
+    LLM_MOCK_RESPONSE: str = ""
+    OPENAI_API_KEY: SecretStr | None = None
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_MODEL: str | None = None
+    LLM_REQUEST_TIMEOUT: float = Field(default=30.0, gt=0, le=600)
+    LLM_MAX_RETRIES: int = Field(default=2, ge=0, le=10)
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

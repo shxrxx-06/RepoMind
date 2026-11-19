@@ -1,13 +1,16 @@
 import hashlib
 import json
 
+from backend.app.core.config import Settings
 from backend.app.rag import (
     EvidenceBuilder,
     MockLLMProvider,
+    OpenAICompatibleProvider,
     PromptBuilder,
     RAGRequest,
     RAGService,
 )
+from backend.app.rag.provider import configured_provider
 from backend.app.retrieval.models import (
     RetrievalFilters,
     RetrievalResponse,
@@ -252,4 +255,52 @@ def test_response_rejects_fabricated_or_missing_citations():
     assert any("identifiers that were not retrieved" in warning for warning in fabricated.warnings)
     assert "could not be validated" in uncited.answer
     assert any("did not cite" in warning for warning in uncited.warnings)
+
+
+def test_openai_shaped_response_still_passes_rag_citation_validation(monkeypatch):
+    citation = _evidence_id("doc-1")
+
+    class ProviderResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "choices": [
+                    {"message": {"content": f"Authentication verifies input [{citation}]."}}
+                ]
+            }
+
+    monkeypatch.setattr(
+        "backend.app.rag.provider.httpx.post",
+        lambda *args, **kwargs: ProviderResponse(),
+    )
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        base_url="https://llm.example/v1",
+        model="mock-model",
+    )
+    response = RAGService(FakeRetriever([_result()]), provider).answer(
+        RAGRequest(question="What does authentication do?")
+    )
+
+    assert response.answer == f"Authentication verifies input [{citation}]."
+    assert response.insufficient_evidence is False
+    assert response.evidence[0].evidence_id == citation
+
+
+def test_rag_handles_missing_production_configuration_safely():
+    settings = Settings(
+        _env_file=None,
+        LLM_PROVIDER="openai",
+        OPENAI_API_KEY="",
+        OPENAI_MODEL="",
+    )
+    response = RAGService(
+        FakeRetriever([_result()]), configured_provider(settings)
+    ).answer(RAGRequest(question="What does authentication do?"))
+
+    assert response.answer == "I couldn't generate a grounded answer at this time."
+    assert any("provider failed" in warning.lower() for warning in response.warnings)
+    assert "API key" not in response.model_dump_json()
 

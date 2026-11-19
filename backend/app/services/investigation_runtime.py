@@ -14,6 +14,7 @@ from backend.app.intelligence.repository_analyzer import RepositoryAnalyzer
 from backend.app.investigation.service import InvestigationService
 from backend.app.parsing.models import ParsedFile
 from backend.app.parsing.python_parser import PythonParser
+from backend.app.rag.provider import configured_provider
 from backend.app.retrieval.hybrid_retriever import HybridRetriever
 from backend.app.storage.local_embedding_store import LocalEmbeddingStore
 
@@ -68,6 +69,7 @@ class InvestigationRuntime:
                     retriever,
                     analysis,
                     repository_root=str(repository_root),
+                    provider=configured_provider(settings),
                 )
             except InvestigationRuntimeError:
                 raise

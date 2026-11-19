@@ -4,6 +4,7 @@ import networkx as nx
 import pytest
 from pydantic import ValidationError
 
+from backend.app.core.config import Settings
 from backend.app.graph.models import RepositoryAnalysisResult
 from backend.app.investigation import (
     ClaimVerifier,
@@ -14,7 +15,12 @@ from backend.app.investigation import (
     InvestigationService,
     TestRecommender,
 )
-from backend.app.rag import EvidenceBuilder, MockLLMProvider, PromptBuilder
+from backend.app.rag import (
+    EvidenceBuilder,
+    MockLLMProvider,
+    PromptBuilder,
+    configured_provider,
+)
 from backend.app.retrieval.models import RetrievalResponse, RetrievalResult
 
 
@@ -517,6 +523,24 @@ def test_provider_errors_are_reported_without_leaking_exception_text():
     assert "provider failed" in response.warnings[-1].lower()
     assert "secret-token-123" not in response.model_dump_json()
     assert response.trace.stop_reason == "Stopped because the provider failed."
+
+
+def test_investigation_fails_safely_when_production_provider_is_unconfigured():
+    provider = configured_provider(
+        Settings(
+            _env_file=None,
+            LLM_PROVIDER="openai",
+            OPENAI_API_KEY="",
+            OPENAI_MODEL="",
+        )
+    )
+    response = InvestigationService(
+        FakeRetriever([_result()]), _analysis(_graph()), provider=provider
+    ).investigate(InvestigationRequest(question="What does run do?"))
+
+    assert response.trace.stop_reason == "Stopped because the provider failed."
+    assert any("provider failed" in warning.lower() for warning in response.warnings)
+    assert "API key" not in response.model_dump_json()
 
 
 def test_metadata_only_evidence_does_not_call_provider():

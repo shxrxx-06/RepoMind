@@ -9,18 +9,31 @@ from backend.app.rag.models import (
     RAGResponse,
 )
 from backend.app.rag.prompt_builder import PromptBuilder
-from backend.app.rag.provider import LLMProvider, MockLLMProvider
+from backend.app.rag.provider import (
+    ConfiguredLLMProvider,
+    LLMConfigurationError,
+    LLMProvider,
+    LLMProviderError,
+    MockLLMProvider,
+    OpenAICompatibleProvider,
+    configured_provider,
+)
 from backend.app.rag.service import RAGService
 
 __all__ = [
+    "ConfiguredLLMProvider",
     "EvidenceBuilder",
     "EvidenceContext",
     "EvidenceItem",
     "GroundedPrompt",
+    "LLMConfigurationError",
     "LLMProvider",
+    "LLMProviderError",
     "MockLLMProvider",
+    "OpenAICompatibleProvider",
     "PromptBuilder",
     "RAGRequest",
     "RAGResponse",
     "RAGService",
+    "configured_provider",
 ]
