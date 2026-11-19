@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, HttpUrl
 
 from backend.app.core.config import settings
+from backend.app.graph.models import RepositoryAnalysisResult
 from backend.app.ingestion.github import clone_github_repository
 from backend.app.ingestion.scanner import scan_repository
 from backend.app.ingestion.zip_handler import extract_repository_zip
@@ -107,6 +108,52 @@ def investigate_repository(
     except Exception as exc:
         logger.exception("Repository investigation failed")
         raise HTTPException(500, "Repository investigation failed") from exc
+
+
+@router.get(
+    "/repositories/{repository_id}/graph",
+    response_model=RepositoryAnalysisResult,
+)
+def get_repository_graph(repository_id: str) -> RepositoryAnalysisResult:
+    """Return the existing serialized analysis graph for an ingested repository."""
+    try:
+        UUID(repository_id)
+    except ValueError as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    repository_path = (settings.REPOSITORIES_DIR / repository_id).resolve()
+    try:
+        repository_path.relative_to(settings.REPOSITORIES_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    if not repository_path.is_dir():
+        raise HTTPException(404, "Repository was not found")
+    try:
+        analysis = investigation_runtime.analysis_for_repository(
+            repository_id,
+            repository_path,
+        )
+        return _repository_graph_response(analysis, repository_path)
+    except InvestigationRuntimeError as exc:
+        logger.exception("Unable to prepare repository graph")
+        raise HTTPException(503, "Repository graph is unavailable") from exc
+    except Exception as exc:
+        logger.exception("Repository graph generation failed")
+        raise HTTPException(500, "Repository graph generation failed") from exc
+
+
+def _repository_graph_response(
+    analysis: RepositoryAnalysisResult,
+    repository_path: Path,
+) -> RepositoryAnalysisResult:
+    """Keep graph errors useful without returning local absolute filesystem paths."""
+    root_forms = {str(repository_path), repository_path.as_posix()}
+    errors = []
+    for error in analysis.errors:
+        message = error.message
+        if any(root and root.casefold() in message.casefold() for root in root_forms):
+            message = "Python source could not be parsed or read."
+        errors.append(error.model_copy(update={"message": message}))
+    return analysis.model_copy(update={"errors": errors})
 
 
 @router.post("/repositories/upload")

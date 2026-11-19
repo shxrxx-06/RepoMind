@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { getApiBaseUrl, ingestGithubRepository, listRepositories, uploadRepositoryZip } from "./api/repositories.js";
 import Brand from "./components/Brand.jsx";
 import InvestigationPanel from "./components/InvestigationPanel.jsx";
+import RepositoryGraph from "./components/RepositoryGraph.jsx";
 import RepositoryOverview from "./components/RepositoryOverview.jsx";
 import RepositorySubmission from "./components/RepositorySubmission.jsx";
 
@@ -13,12 +14,18 @@ export default function App() {
   const [repositories, setRepositories] = useState([]);
   const [repositoriesError, setRepositoriesError] = useState("");
   const [investigationKey, setInvestigationKey] = useState(0);
+  const [activeRepositoryId, setActiveRepositoryId] = useState("");
 
   useEffect(() => {
     listRepositories()
       .then((items) => {
-        setRepositories(items);
+        setRepositories((current) => {
+          const byId = new Map(current.map((item) => [item.repository_id, item]));
+          for (const item of items) byId.set(item.repository_id, item);
+          return [...byId.values()];
+        });
         setRepositoriesError("");
+        setActiveRepositoryId((selected) => selected || items[0]?.repository_id || "");
       })
       .catch((requestError) => setRepositoriesError(requestError.message));
   }, []);
@@ -33,11 +40,25 @@ export default function App() {
         ? await ingestGithubRepository(value)
         : await uploadRepositoryZip(value);
       setRepository(result);
+      setActiveRepositoryId(result.repository_id);
+      setRepositories((current) => [
+        {
+          repository_id: result.repository_id,
+          total_files: result.metadata.total_files,
+          language_distribution: result.metadata.language_distribution || {},
+        },
+        ...current.filter((item) => item.repository_id !== result.repository_id),
+      ]);
       setInvestigationKey((key) => key + 1);
       try {
         const items = await listRepositories();
-        setRepositories(items);
+        setRepositories((current) => {
+          const byId = new Map(current.map((item) => [item.repository_id, item]));
+          for (const item of items) byId.set(item.repository_id, item);
+          return [...byId.values()];
+        });
         setRepositoriesError("");
+        setActiveRepositoryId(result.repository_id);
       } catch (requestError) {
         setRepositoriesError(requestError.message);
       }
@@ -89,7 +110,14 @@ export default function App() {
           key={investigationKey}
           repositories={repositories}
           repositoriesError={repositoriesError}
-          initialRepositoryId={repository?.repository_id || ""}
+          selectedRepositoryId={activeRepositoryId}
+          onSelectedRepositoryChange={setActiveRepositoryId}
+        />
+
+        <RepositoryGraph
+          repositories={repositories}
+          selectedRepositoryId={activeRepositoryId}
+          repositoriesError={repositoriesError}
         />
 
         <section className="how-it-works" aria-label="How RepoMind works">
@@ -110,7 +138,7 @@ export default function App() {
       <footer className="footer">
         <Brand compact />
         <span>Repository intelligence, grounded in your code.</span>
-        <span className="footer-version">RepoMind · Day 9</span>
+        <span className="footer-version">RepoMind · Day 10</span>
       </footer>
     </div>
   );

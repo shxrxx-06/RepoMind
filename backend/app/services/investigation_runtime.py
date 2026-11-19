@@ -28,6 +28,8 @@ class InvestigationRuntime:
         self.embedding_service = EmbeddingService()
         self.store = LocalEmbeddingStore()
         self._services: dict[str, InvestigationService] = {}
+        self._analyses: dict[str, RepositoryAnalysisResult] = {}
+        self._parsed_files: dict[str, list[ParsedFile]] = {}
         self._repository_locks: dict[str, Lock] = {}
         self._repository_locks_guard = Lock()
 
@@ -59,7 +61,32 @@ class InvestigationRuntime:
                 ) from exc
 
             self._services[repository_id] = service
+            self._analyses[repository_id] = analysis
             return service
+
+    def analysis_for_repository(
+        self,
+        repository_id: str,
+        repository_root: Path,
+    ) -> RepositoryAnalysisResult:
+        """Return the graph analysis cached with the repository investigation service."""
+        repository_root = repository_root.resolve(strict=True)
+        if not repository_root.is_dir():
+            raise InvestigationRuntimeError("Repository directory is unavailable")
+        with self._repository_locks_guard:
+            lock = self._repository_locks.setdefault(repository_id, Lock())
+        with lock:
+            analysis = self._analyses.get(repository_id)
+            if analysis is None:
+                try:
+                    parsed_files, analysis = self._analyze_repository(repository_root)
+                except Exception as exc:
+                    raise InvestigationRuntimeError(
+                        "Repository graph could not be generated"
+                    ) from exc
+                self._parsed_files[repository_id] = parsed_files
+                self._analyses[repository_id] = analysis
+            return analysis
 
     def _prepare_repository(
         self,
@@ -70,6 +97,20 @@ class InvestigationRuntime:
         store_path = intelligence_dir / f"{repository_id}.npz"
         intelligence_dir.mkdir(parents=True, exist_ok=True)
 
+        parsed_files = self._parsed_files.get(repository_id)
+        analysis = self._analyses.get(repository_id)
+        if parsed_files is None or analysis is None:
+            parsed_files, analysis = self._analyze_repository(repository_root)
+            self._parsed_files[repository_id] = parsed_files
+            self._analyses[repository_id] = analysis
+        self._ensure_embedding_store(parsed_files, repository_root, store_path)
+
+        return analysis, store_path
+
+    @staticmethod
+    def _analyze_repository(
+        repository_root: Path,
+    ) -> tuple[list[ParsedFile], RepositoryAnalysisResult]:
         parsed_files = []
         parser = PythonParser()
         scan = scan_repository(repository_root)
@@ -80,11 +121,8 @@ class InvestigationRuntime:
             parsed = parser.parse_file(source_path)
             parsed.file_path = source_path.relative_to(repository_root).as_posix()
             parsed_files.append(parsed)
-
         analysis = RepositoryAnalyzer().analyze(repository_root, parsed_files)
-        self._ensure_embedding_store(parsed_files, repository_root, store_path)
-
-        return analysis, store_path
+        return parsed_files, analysis
 
     def _ensure_embedding_store(
         self,

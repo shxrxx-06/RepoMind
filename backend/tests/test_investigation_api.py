@@ -5,11 +5,17 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from backend.app.api import routes
+from backend.app.graph.models import (
+    GraphNode,
+    GraphRelationship,
+    RepositoryAnalysisResult,
+)
 from backend.app.investigation.models import (
     InvestigationRequest,
     InvestigationResponse,
     InvestigationTrace,
 )
+from backend.app.parsing.models import ParseError
 from backend.app.rag.models import EvidenceItem
 from backend.app.services.investigation_runtime import InvestigationRuntimeError
 
@@ -56,12 +62,45 @@ class FakeRuntime:
         self.service = service or FakeService()
         self.error = error
         self.calls = []
+        self.graph_calls = []
 
     def for_repository(self, repository_id, repository_path):
         self.calls.append((repository_id, repository_path))
         if self.error:
             raise self.error
         return self.service
+
+    def analysis_for_repository(self, repository_id, repository_path):
+        self.graph_calls.append((repository_id, repository_path))
+        if self.error:
+            raise self.error
+        return RepositoryAnalysisResult(
+            nodes=[
+                GraphNode(
+                    node_id="file:src/module.py",
+                    node_type="File",
+                    file_path="src/module.py",
+                ),
+                GraphNode(
+                    node_id="symbol:src/module.py:run",
+                    node_type="Function",
+                    qualified_name="run",
+                    symbol_type="function",
+                    file_path="src/module.py",
+                    start_line=3,
+                    end_line=5,
+                ),
+            ],
+            relationships=[
+                GraphRelationship(
+                    source="file:src/module.py",
+                    target="symbol:src/module.py:run",
+                    relationship_type="DEFINES",
+                    source_lines=[],
+                    resolution_status="resolved",
+                )
+            ],
+        )
 
 
 def test_investigation_endpoint_invokes_agent_and_serializes_evidence(tmp_path, monkeypatch):
@@ -141,3 +180,82 @@ def test_repository_list_only_returns_ingested_uuid_directories(tmp_path, monkey
     assert repositories[0].repository_id == repository_id
     assert repositories[0].total_files == 1
     assert repositories[0].language_distribution == {"Python": 1}
+
+
+def test_graph_endpoint_serializes_existing_nodes_and_relationships(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    repository_path = tmp_path / repository_id
+    repository_path.mkdir()
+    runtime = FakeRuntime()
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(routes, "investigation_runtime", runtime)
+
+    response = routes.get_repository_graph(repository_id)
+
+    assert runtime.graph_calls == [(repository_id, repository_path.resolve())]
+    payload = response.model_dump(mode="json")
+    assert payload["nodes"][1] == {
+        "node_id": "symbol:src/module.py:run",
+        "node_type": "Function",
+        "qualified_name": "run",
+        "file_path": "src/module.py",
+        "symbol_type": "function",
+        "start_line": 3,
+        "end_line": 5,
+    }
+    assert payload["relationships"] == [{
+        "source": "file:src/module.py",
+        "target": "symbol:src/module.py:run",
+        "relationship_type": "DEFINES",
+        "source_lines": [],
+        "resolution_status": "resolved",
+    }]
+
+
+def test_graph_endpoint_rejects_invalid_and_missing_repository_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    runtime = FakeRuntime()
+    monkeypatch.setattr(routes, "investigation_runtime", runtime)
+
+    with pytest.raises(HTTPException) as invalid:
+        routes.get_repository_graph("invalid-id")
+    with pytest.raises(HTTPException) as missing:
+        routes.get_repository_graph(str(uuid4()))
+
+    assert invalid.value.status_code == 404
+    assert missing.value.status_code == 404
+    assert runtime.graph_calls == []
+
+
+def test_graph_endpoint_hides_graph_generation_failure_details(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    (tmp_path / repository_id).mkdir()
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(
+        routes,
+        "investigation_runtime",
+        FakeRuntime(error=InvestigationRuntimeError("local path must remain private")),
+    )
+
+    with pytest.raises(HTTPException) as failure:
+        routes.get_repository_graph(repository_id)
+
+    assert failure.value.status_code == 503
+    assert failure.value.detail == "Repository graph is unavailable"
+    assert "local path must remain private" not in failure.value.detail
+
+
+def test_graph_response_sanitizes_local_filesystem_paths(tmp_path):
+    repository_path = tmp_path / "repository-id"
+    result = routes._repository_graph_response(
+        RepositoryAnalysisResult(errors=[
+            ParseError(
+                message=f"Unable to read {repository_path}\\src\\broken.py",
+                error_type="OSError",
+            )
+        ]),
+        repository_path,
+    )
+
+    assert result.errors[0].message == "Python source could not be parsed or read."
+    assert str(repository_path) not in result.errors[0].message

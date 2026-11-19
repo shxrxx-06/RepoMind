@@ -42,8 +42,12 @@ function Evidence({ item }) {
   );
 }
 
-export default function InvestigationPanel({ repositories, repositoriesError, initialRepositoryId }) {
-  const [repositoryId, setRepositoryId] = useState(initialRepositoryId || "");
+export default function InvestigationPanel({
+  repositories,
+  repositoriesError,
+  selectedRepositoryId,
+  onSelectedRepositoryChange,
+}) {
   const [question, setQuestion] = useState("");
   const [response, setResponse] = useState(null);
   const [error, setError] = useState("");
@@ -51,12 +55,12 @@ export default function InvestigationPanel({ repositories, repositoriesError, in
 
   async function ask(event) {
     event.preventDefault();
-    if (isAsking || !repositoryId || !question.trim()) return;
+    if (isAsking || !selectedRepositoryId || !question.trim()) return;
     setIsAsking(true);
     setError("");
     setResponse(null);
     try {
-      setResponse(await investigateRepository(repositoryId, question.trim()));
+      setResponse(await investigateRepository(selectedRepositoryId, question.trim()));
     } catch (requestError) {
       setError(requestError.message || "Investigation failed. Please try again.");
     } finally {
@@ -84,8 +88,12 @@ export default function InvestigationPanel({ repositories, repositoriesError, in
           <label htmlFor="investigation-repository">Repository</label>
           <select
             id="investigation-repository"
-            value={repositoryId}
-            onChange={(event) => setRepositoryId(event.target.value)}
+            value={selectedRepositoryId}
+            onChange={(event) => {
+              onSelectedRepositoryChange(event.target.value);
+              setResponse(null);
+              setError("");
+            }}
             disabled={isAsking}
           >
             <option value="">Choose an ingested repository</option>
@@ -111,7 +119,7 @@ export default function InvestigationPanel({ repositories, repositoriesError, in
             required
           />
           {error && <div className="error-banner" role="alert"><span>!</span><p>{error}</p></div>}
-          <button className="submit-button" type="submit" disabled={isAsking || !repositoryId || !question.trim()}>
+          <button className="submit-button" type="submit" disabled={isAsking || !selectedRepositoryId || !question.trim()}>
             {isAsking ? <><span className="button-spinner" aria-hidden="true" /> Investigating…</> : <>Ask RepoMind <span aria-hidden="true">→</span></>}
           </button>
         </form>

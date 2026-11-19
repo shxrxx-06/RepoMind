@@ -269,3 +269,26 @@ def test_failed_initialization_releases_repository_lock(tmp_path, monkeypatch):
 
     assert result is not None
     assert attempts == 2
+
+
+def test_graph_analysis_is_cached_without_initializing_embedding_model(tmp_path, monkeypatch):
+    runtime = InvestigationRuntime()
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    analysis = RepositoryAnalysisResult()
+    calls = 0
+
+    def analyze(repository_root):
+        nonlocal calls
+        calls += 1
+        return [], analysis
+
+    monkeypatch.setattr(runtime, "_analyze_repository", analyze)
+    first = runtime.analysis_for_repository("repo", repository)
+    second = runtime.analysis_for_repository("repo", repository)
+
+    assert first is analysis
+    assert second is analysis
+    assert calls == 1
+    assert runtime._services == {}
+    assert runtime.embedding_service.known_embedding_dimension is None

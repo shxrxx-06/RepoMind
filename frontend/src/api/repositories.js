@@ -116,3 +116,34 @@ export async function investigateRepository(repositoryId, question) {
     body: JSON.stringify({ question }),
   }, false);
 }
+
+const graphRequests = new Map();
+
+export function getRepositoryGraph(repositoryId) {
+  if (graphRequests.has(repositoryId)) return graphRequests.get(repositoryId);
+  const pending = send(
+    `/repositories/${encodeURIComponent(repositoryId)}/graph`,
+    { method: "GET" },
+    false,
+  ).then((payload) => {
+    const validGraph = Array.isArray(payload.nodes)
+      && payload.nodes.every((node) => (
+        node
+        && typeof node.node_id === "string"
+        && ["File", "Class", "Function", "Method"].includes(node.node_type)
+      ))
+      && Array.isArray(payload.relationships)
+      && payload.relationships.every((edge) => (
+        edge
+        && typeof edge.source === "string"
+        && typeof edge.target === "string"
+        && ["IMPORTS", "DEFINES", "CONTAINS", "CALLS"].includes(edge.relationship_type)
+      ));
+    if (!validGraph) {
+      throw new ApiError("The backend returned a graph response with an invalid structure.");
+    }
+    return payload;
+  }).finally(() => graphRequests.delete(repositoryId));
+  graphRequests.set(repositoryId, pending);
+  return pending;
+}
