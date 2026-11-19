@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 50
     MAX_FILE_SIZE_MB: int = 1
     MAX_REPOSITORY_FILES: int = 10_000
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
