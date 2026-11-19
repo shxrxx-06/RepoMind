@@ -58,6 +58,12 @@ class EmbeddingService:
         """Embed one document using the same batching and validation path."""
         return self.embed_documents([document]).embeddings[0]
 
+    def embed_text(self, text: str) -> list[float]:
+        """Embed standalone text such as a search query with the cached model."""
+        if not text.strip():
+            raise ValueError("text must not be empty")
+        return self._encode_texts([text], batch_size=1)[0].astype(float).tolist()
+
     def embed_documents(
         self,
         documents: Sequence[CodeDocument],
@@ -75,41 +81,9 @@ class EmbeddingService:
             )
 
         started = perf_counter()
-        model = self._get_model()
-        expected_dimension = self._read_dimension(model)
         texts = [document.text for document in documents]
-        try:
-            raw_vectors = model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-            )
-            vectors = np.asarray(raw_vectors, dtype=np.float32)
-        except Exception as exc:
-            raise EmbeddingGenerationError(
-                f"Failed to generate embeddings with model {self.model_name!r}: {exc}"
-            ) from exc
-
-        if vectors.ndim == 1 and len(documents) == 1:
-            vectors = vectors.reshape(1, -1)
-        if vectors.ndim != 2 or vectors.shape[0] != len(documents):
-            raise EmbeddingGenerationError(
-                "Model returned a vector matrix that does not match the document batch"
-            )
+        vectors = self._encode_texts(texts, batch_size=batch_size)
         dimension = int(vectors.shape[1])
-        if dimension <= 0 or (expected_dimension is not None and dimension != expected_dimension):
-            raise EmbeddingGenerationError(
-                f"Model returned dimension {dimension}; expected {expected_dimension}"
-            )
-        if not np.isfinite(vectors).all():
-            raise EmbeddingGenerationError("Model returned non-finite vector values")
-        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        if np.any(norms == 0):
-            raise EmbeddingGenerationError("Model returned a zero-length vector")
-        vectors = vectors / norms
-        self._dimension = dimension
 
         embedded = [
             CodeEmbedding(
@@ -126,6 +100,43 @@ class EmbeddingService:
             embedding_dimension=dimension,
             processing_time_seconds=perf_counter() - started,
         )
+
+    def _encode_texts(self, texts: Sequence[str], batch_size: int) -> np.ndarray:
+        model = self._get_model()
+        expected_dimension = self._read_dimension(model)
+        try:
+            raw_vectors = model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            )
+            vectors = np.asarray(raw_vectors, dtype=np.float32)
+        except Exception as exc:
+            raise EmbeddingGenerationError(
+                f"Failed to generate embeddings with model {self.model_name!r}: {exc}"
+            ) from exc
+
+        if vectors.ndim == 1 and len(texts) == 1:
+            vectors = vectors.reshape(1, -1)
+        if vectors.ndim != 2 or vectors.shape[0] != len(texts):
+            raise EmbeddingGenerationError(
+                "Model returned a vector matrix that does not match the document batch"
+            )
+        dimension = int(vectors.shape[1])
+        if dimension <= 0 or (expected_dimension is not None and dimension != expected_dimension):
+            raise EmbeddingGenerationError(
+                f"Model returned dimension {dimension}; expected {expected_dimension}"
+            )
+        if not np.isfinite(vectors).all():
+            raise EmbeddingGenerationError("Model returned non-finite vector values")
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        if np.any(norms == 0):
+            raise EmbeddingGenerationError("Model returned a zero-length vector")
+        vectors = vectors / norms
+        self._dimension = dimension
+        return vectors
 
     def _get_model(self) -> Any:
         if self._model is not None:
