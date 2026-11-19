@@ -11,12 +11,16 @@ from backend.app.graph.models import (
     RepositoryAnalysisResult,
 )
 from backend.app.intelligence.impact_models import ImpactAnalysisRequest
+from backend.app.intelligence.test_intelligence_models import (
+    TestIntelligenceRequest as IntelligenceRequest,
+)
 from backend.app.investigation.models import (
     InvestigationRequest,
     InvestigationResponse,
     InvestigationTrace,
 )
 from backend.app.parsing.models import ParseError
+from backend.app.parsing.python_parser import PythonParser
 from backend.app.rag.models import EvidenceItem
 from backend.app.services.investigation_runtime import InvestigationRuntimeError
 
@@ -121,6 +125,17 @@ class FakeRuntime:
                 ),
             ],
         )
+
+    def parsed_files_for_repository(self, repository_id, repository_path):
+        if self.error:
+            raise self.error
+        parsed_files = []
+        parser = PythonParser()
+        for path in sorted(repository_path.rglob("*.py")):
+            parsed = parser.parse_file(path)
+            parsed.file_path = path.relative_to(repository_path).as_posix()
+            parsed_files.append(parsed)
+        return parsed_files
 
 
 def test_investigation_endpoint_invokes_agent_and_serializes_evidence(tmp_path, monkeypatch):
@@ -362,4 +377,132 @@ def test_impact_endpoint_rejects_repository_changes_during_analysis(tmp_path, mo
     assert changed.value.status_code == 409
     assert changed.value.detail == (
         "Repository changed during impact analysis; retry against the updated snapshot"
+    )
+
+
+def test_test_intelligence_endpoint_returns_inventory_and_mappings(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    repository = tmp_path / repository_id
+    (repository / "src").mkdir(parents=True)
+    (repository / "tests").mkdir()
+    (repository / "src" / "module.py").write_text(
+        "def run():\n    return True\n", encoding="utf-8"
+    )
+    (repository / "tests" / "test_module.py").write_text(
+        "def test_run():\n    assert True\n", encoding="utf-8"
+    )
+    runtime = FakeRuntime()
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(routes, "investigation_runtime", runtime)
+
+    response = routes.analyze_repository_test_intelligence(
+        repository_id,
+        IntelligenceRequest(),
+    )
+
+    payload = response.model_dump(mode="json")
+    assert payload["repository_id"] == repository_id
+    assert payload["discovered_test_files"][0]["file_path"] == "tests/test_module.py"
+    assert "mappings" in payload
+    assert "uncovered_components" in payload
+    assert "inferred_recommendations" in payload
+    assert any("no test execution" in warning for warning in payload["warnings"])
+
+
+def test_test_intelligence_endpoint_handles_invalid_repository_and_path(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    (tmp_path / repository_id).mkdir()
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    runtime = FakeRuntime()
+    monkeypatch.setattr(routes, "investigation_runtime", runtime)
+
+    with pytest.raises(HTTPException) as invalid_repository:
+        routes.analyze_repository_test_intelligence("invalid", IntelligenceRequest())
+    with pytest.raises(HTTPException) as missing_file:
+        routes.analyze_repository_test_intelligence(
+            repository_id,
+            IntelligenceRequest(changed_file_path="src/missing.py"),
+        )
+    with pytest.raises(ValidationError):
+        IntelligenceRequest(changed_file_path="../outside.py")
+
+    assert invalid_repository.value.status_code == 404
+    assert missing_file.value.status_code == 404
+
+
+def test_test_intelligence_endpoint_hides_repository_analysis_failure(tmp_path, monkeypatch):
+    repository_id = str(uuid4())
+    repository = tmp_path / repository_id
+    (repository / "src").mkdir(parents=True)
+    (repository / "src" / "module.py").write_text("def run(): pass\n", encoding="utf-8")
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(
+        routes,
+        "investigation_runtime",
+        FakeRuntime(error=InvestigationRuntimeError("private path detail")),
+    )
+
+    with pytest.raises(HTTPException) as failure:
+        routes.analyze_repository_test_intelligence(repository_id, IntelligenceRequest())
+
+    assert failure.value.status_code == 503
+    assert failure.value.detail == "Repository test analysis is unavailable"
+    assert "private path detail" not in failure.value.detail
+
+
+def test_test_intelligence_endpoint_rejects_repository_mutation_during_analysis(
+    tmp_path, monkeypatch
+):
+    repository_id = str(uuid4())
+    repository = tmp_path / repository_id
+    (repository / "src").mkdir(parents=True)
+    source = repository / "src" / "module.py"
+    source.write_text("def run(): return True\n", encoding="utf-8")
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(routes, "investigation_runtime", FakeRuntime())
+    original = routes.TestIntelligenceAnalyzer
+
+    class MutatingAnalyzer:
+        def analyze(self, *args, **kwargs):
+            report = original().analyze(*args, **kwargs)
+            source.write_text("def run(): return False\n", encoding="utf-8")
+            return report
+
+    monkeypatch.setattr(routes, "TestIntelligenceAnalyzer", MutatingAnalyzer)
+
+    with pytest.raises(HTTPException) as failure:
+        routes.analyze_repository_test_intelligence(repository_id, IntelligenceRequest())
+
+    assert failure.value.status_code == 409
+    assert failure.value.detail == (
+        "Repository changed during test analysis; retry against the updated snapshot"
+    )
+
+
+def test_test_intelligence_endpoint_returns_409_when_repository_changes_during_analysis(
+    tmp_path, monkeypatch
+):
+    repository_id = str(uuid4())
+    repository = tmp_path / repository_id
+    (repository / "src").mkdir(parents=True)
+    source = repository / "src" / "module.py"
+    source.write_text("def run(): return True\n", encoding="utf-8")
+    monkeypatch.setattr(routes.settings, "REPOSITORIES_DIR", tmp_path)
+    monkeypatch.setattr(routes, "investigation_runtime", FakeRuntime())
+    original_analyzer = routes.TestIntelligenceAnalyzer
+
+    class MutatingAnalyzer:
+        def analyze(self, *args, **kwargs):
+            result = original_analyzer().analyze(*args, **kwargs)
+            source.write_text("def run(): return False\n", encoding="utf-8")
+            return result
+
+    monkeypatch.setattr(routes, "TestIntelligenceAnalyzer", MutatingAnalyzer)
+
+    with pytest.raises(HTTPException) as changed:
+        routes.analyze_repository_test_intelligence(repository_id, IntelligenceRequest())
+
+    assert changed.value.status_code == 409
+    assert changed.value.detail == (
+        "Repository changed during test analysis; retry against the updated snapshot"
     )

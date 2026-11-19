@@ -110,6 +110,7 @@ class InferredTestRecommendation(BaseModel):
 class ChangeImpactReport(BaseModel):
     repository_id: str
     changed_component: GraphNode
+    changed_targets: list[GraphNode] = Field(default_factory=list)
     changed_file_path: str
     directly_affected: list[AffectedComponent] = Field(default_factory=list)
     indirectly_affected: list[AffectedComponent] = Field(default_factory=list)
@@ -133,10 +134,23 @@ class ChangeImpactReport(BaseModel):
         components = [*self.directly_affected, *self.indirectly_affected]
         if len(components) > self.max_results:
             raise ValueError("affected component count cannot exceed max_results")
-        known_nodes = {self.changed_component.node_id: self.changed_component}
-        for node in [self.changed_component, *(item.node for item in components)]:
+        changed_targets = self.changed_targets or [self.changed_component]
+        changed_nodes_by_id = {node.node_id: node for node in changed_targets}
+        target_ids = set(changed_nodes_by_id)
+        if len(target_ids) != len(changed_targets) or self.changed_component.node_id not in target_ids:
+            raise ValueError("changed_targets must be unique and include changed_component")
+        component_nodes_by_id = {item.node.node_id: item.node for item in components}
+        if (
+            len(component_nodes_by_id) != len(components)
+            or target_ids.intersection(component_nodes_by_id)
+        ):
+            raise ValueError("changed target and affected component node IDs must be unique")
+        known_nodes = {**changed_nodes_by_id, **component_nodes_by_id}
+        for node in known_nodes.values():
             if not node.file_path or not _safe_repository_path(node.file_path):
                 raise ValueError("graph node has an invalid repository-relative path")
+            if node.file_path != self.changed_file_path and node in changed_targets:
+                raise ValueError("changed target nodes must belong to changed_file_path")
             expected_id = (
                 f"file:{node.file_path}"
                 if node.node_type == "File"
@@ -148,9 +162,6 @@ class ChangeImpactReport(BaseModel):
             node = component.node
             if component.depth > self.max_depth:
                 raise ValueError("affected component depth cannot exceed max_depth")
-            if node.node_id in known_nodes:
-                raise ValueError("affected component node IDs must be unique")
-            known_nodes[node.node_id] = node
             expected_impact = "direct" if component.depth == 1 else "indirect"
             if component.impact_type != expected_impact:
                 raise ValueError("impact type must agree with component depth")
@@ -161,8 +172,8 @@ class ChangeImpactReport(BaseModel):
                     raise ValueError("dependency path length must agree with impact depth")
                 if path.node_ids[0] != node.node_id:
                     raise ValueError("dependency path must start at its affected component")
-                if path.node_ids[-1] != self.changed_component.node_id:
-                    raise ValueError("dependency path must end at the changed component")
+                if path.node_ids[-1] not in target_ids:
+                    raise ValueError("dependency path must end at a changed target")
                 if len(path.relationships) != len(path.node_ids) - 1:
                     raise ValueError("dependency path must have one relationship per adjacent node pair")
                 if any(node_id not in known_nodes for node_id in path.node_ids):

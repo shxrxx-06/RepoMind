@@ -114,6 +114,20 @@ class InvestigationRuntime:
             self._fingerprints[repository_id] = fingerprint
             return analysis
 
+    def parsed_files_for_repository(
+        self,
+        repository_id: str,
+        repository_root: Path,
+    ) -> list[ParsedFile]:
+        """Return cached parsed files after analysis_for_repository established the cache."""
+        with self._repository_locks_guard:
+            lock = self._repository_locks.setdefault(repository_id, Lock())
+        with lock:
+            parsed_files = self._parsed_files.get(repository_id)
+            if parsed_files is None:
+                raise InvestigationRuntimeError("Parsed repository files are unavailable")
+            return [item.model_copy(deep=True) for item in parsed_files]
+
     def invalidate_repository(self, repository_id: str) -> None:
         """Explicitly discard this process's parsed, graph, and service caches."""
         with self._repository_locks_guard:

@@ -364,3 +364,28 @@ def test_graph_analysis_is_cached_without_initializing_embedding_model(tmp_path,
     assert calls == 1
     assert runtime._services == {}
     assert runtime.embedding_service.known_embedding_dimension is None
+
+
+def test_parsed_files_for_repository_reuses_analysis_cache_and_returns_copy(
+    tmp_path, monkeypatch
+):
+    runtime = InvestigationRuntime()
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    parsed_file = ParsedFile(file_path="module.py")
+    calls = 0
+
+    def analyze(repository_root):
+        nonlocal calls
+        calls += 1
+        return [parsed_file], RepositoryAnalysisResult()
+
+    monkeypatch.setattr(runtime, "_analyze_repository", analyze)
+
+    runtime.analysis_for_repository("repo", repository)
+    first = runtime.parsed_files_for_repository("repo", repository)
+    first[0].file_path = "mutated.py"
+    second = runtime.parsed_files_for_repository("repo", repository)
+
+    assert calls == 1
+    assert second[0].file_path == "module.py"

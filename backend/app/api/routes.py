@@ -23,6 +23,11 @@ from backend.app.intelligence.impact_models import (
     ChangeImpactReport,
     ImpactAnalysisRequest,
 )
+from backend.app.intelligence.test_intelligence import TestIntelligenceAnalyzer
+from backend.app.intelligence.test_intelligence_models import (
+    TestIntelligenceRequest,
+    TestIntelligenceResponse,
+)
 from backend.app.investigation.models import InvestigationRequest, InvestigationResponse
 from backend.app.services.investigation_runtime import (
     InvestigationRuntime,
@@ -227,6 +232,85 @@ def analyze_repository_impact(
     except Exception as exc:
         logger.exception("Repository impact analysis failed")
         raise HTTPException(500, "Repository impact analysis failed") from exc
+
+
+@router.post(
+    "/repositories/{repository_id}/test-intelligence",
+    response_model=TestIntelligenceResponse,
+)
+def analyze_repository_test_intelligence(
+    repository_id: str,
+    request: TestIntelligenceRequest,
+) -> TestIntelligenceResponse:
+    """Inventory Python tests and report evidence-backed source references."""
+    try:
+        UUID(repository_id)
+    except ValueError as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    repository_root = settings.REPOSITORIES_DIR / repository_id
+    try:
+        repository_root = repository_root.resolve(strict=True)
+        repository_root.relative_to(settings.REPOSITORIES_DIR.resolve())
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404, "Repository was not found") from exc
+    if not repository_root.is_dir():
+        raise HTTPException(404, "Repository was not found")
+
+    if request.changed_file_path:
+        requested_path = repository_root.joinpath(*request.changed_file_path.split("/"))
+        try:
+            resolved_path = requested_path.resolve(strict=True)
+            resolved_path.relative_to(repository_root)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(404, "Changed file was not found in the repository") from exc
+        if not resolved_path.is_file():
+            raise HTTPException(404, "Changed file was not found in the repository")
+
+    try:
+        fingerprint_before = investigation_runtime.repository_fingerprint(repository_root)
+        try:
+            analysis = investigation_runtime.analysis_for_repository(repository_id, repository_root)
+            parsed_files = investigation_runtime.parsed_files_for_repository(
+                repository_id,
+                repository_root,
+            )
+            report = TestIntelligenceAnalyzer().analyze(
+                repository_id,
+                repository_root,
+                parsed_files,
+                analysis,
+                request,
+            )
+        except Exception as analysis_error:
+            fingerprint_after_failure = investigation_runtime.repository_fingerprint(
+                repository_root
+            )
+            if fingerprint_after_failure != fingerprint_before:
+                raise RepositorySnapshotChanged(
+                    "Repository contents changed during test intelligence analysis"
+                ) from analysis_error
+            raise
+        fingerprint_after = investigation_runtime.repository_fingerprint(repository_root)
+        if fingerprint_after != fingerprint_before:
+            raise RepositorySnapshotChanged(
+                "Repository contents changed during test intelligence analysis"
+            )
+        return report
+    except ImpactFileNotInGraph as exc:
+        raise HTTPException(422, "Changed file is not represented in the Python repository graph") from exc
+    except ImpactSymbolNotFound as exc:
+        raise HTTPException(404, "Changed symbol was not found in that file") from exc
+    except RepositorySnapshotChanged as exc:
+        raise HTTPException(
+            409,
+            "Repository changed during test analysis; retry against the updated snapshot",
+        ) from exc
+    except InvestigationRuntimeError as exc:
+        logger.exception("Unable to prepare repository test intelligence")
+        raise HTTPException(503, "Repository test analysis is unavailable") from exc
+    except Exception as exc:
+        logger.exception("Repository test intelligence analysis failed")
+        raise HTTPException(500, "Repository test analysis failed") from exc
 
 
 @router.post("/repositories/upload")

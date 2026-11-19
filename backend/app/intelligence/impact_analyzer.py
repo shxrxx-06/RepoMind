@@ -217,6 +217,7 @@ class ChangeImpactAnalyzer:
         return ChangeImpactReport(
             repository_id=repository_id,
             changed_component=changed_component,
+            changed_targets=target_nodes,
             changed_file_path=target_path,
             directly_affected=direct,
             indirectly_affected=indirect,

@@ -171,3 +171,58 @@ export function analyzeRepositoryImpact(repositoryId, request) {
     return payload;
   });
 }
+
+export function analyzeRepositoryTestIntelligence(repositoryId, request = {}) {
+  return send(
+    `/repositories/${encodeURIComponent(repositoryId)}/test-intelligence`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    false,
+  ).then((payload) => {
+    const evidenceClasses = new Set([
+      "direct_resolved_call",
+      "import_only_reference",
+      "uncertain_candidate",
+      "no_discoverable_test_reference",
+    ]);
+    const valid = payload
+      && typeof payload === "object"
+      && Array.isArray(payload.discovered_test_files)
+      && Array.isArray(payload.mappings)
+      && payload.mappings.every((item) => (
+        item
+        && typeof item.test_file_path === "string"
+        && typeof item.test_qualified_name === "string"
+        && item.source_component
+        && evidenceClasses.has(item.evidence_classification)
+        && ["high", "medium", "low"].includes(item.certainty)
+        && Array.isArray(item.evidence)
+      ))
+      && Array.isArray(payload.uncovered_components)
+      && payload.uncovered_components.every((item) => (
+        item
+        && item.source_component
+        && ["import_only_reference", "uncertain_candidate", "no_discoverable_test_reference"]
+          .includes(item.evidence_classification)
+      ))
+      && Array.isArray(payload.inferred_recommendations)
+      && payload.inferred_recommendations.every((item) => (
+        item
+        && item.recommendation_type === "inferred"
+        && item.source_component
+        && ["import_only_reference", "uncertain_candidate", "no_discoverable_test_reference"]
+          .includes(item.evidence_classification)
+      ))
+      && Array.isArray(payload.warnings)
+      && Number.isInteger(payload.max_results)
+      && Number.isInteger(payload.analyzed_component_count)
+      && typeof payload.result_limit_reached === "boolean";
+    if (!valid) {
+      throw new ApiError("The backend returned a test intelligence response with an invalid structure.");
+    }
+    return payload;
+  });
+}

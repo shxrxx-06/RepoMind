@@ -7,6 +7,7 @@ import ImpactAnalysisPanel from "./components/ImpactAnalysisPanel.jsx";
 import RepositoryGraph from "./components/RepositoryGraph.jsx";
 import RepositoryOverview from "./components/RepositoryOverview.jsx";
 import RepositorySubmission from "./components/RepositorySubmission.jsx";
+import TestIntelligencePanel from "./components/TestIntelligencePanel.jsx";
 
 export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -138,6 +139,8 @@ export default function App() {
             .map((node) => node.file_path)}
         />
 
+        <TestIntelligencePanel selectedRepositoryId={activeRepositoryId} />
+
         <section className="how-it-works" aria-label="How RepoMind works">
           <div className="how-heading">
             <span className="eyebrow">A CLEARER STARTING POINT</span>
@@ -156,7 +159,7 @@ export default function App() {
       <footer className="footer">
         <Brand compact />
         <span>Repository intelligence, grounded in your code.</span>
-        <span className="footer-version">RepoMind · Day 11</span>
+        <span className="footer-version">RepoMind · Day 12</span>
       </footer>
     </div>
   );

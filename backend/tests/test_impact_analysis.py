@@ -196,6 +196,29 @@ def test_symbol_scope_limits_changed_component_to_that_symbol():
     assert [item.node.qualified_name for item in report.directly_affected] == ["use_changed"]
 
 
+def test_file_scope_call_path_preserves_the_exact_changed_symbol_target():
+    changed = _symbol("src/base.py", "run")
+    caller = _symbol("src/caller.py", "invoke")
+    analysis = _analysis(
+        ["src/base.py", "src/caller.py"],
+        [GraphRelationship(
+            source=caller.node_id,
+            target=changed.node_id,
+            relationship_type="CALLS",
+            source_lines=[7],
+            resolution_status="resolved",
+        )],
+        symbols=[changed, caller],
+    )
+
+    report = _run(analysis)
+
+    assert report.changed_component.node_type == "File"
+    assert changed.node_id in {node.node_id for node in report.changed_targets}
+    assert report.directly_affected[0].paths[0].node_ids[-1] == changed.node_id
+    assert ChangeImpactReport.model_validate(report.model_dump())
+
+
 def test_symbol_scope_does_not_confirm_file_imports_as_symbol_usage():
     target_path = "src/base.py"
     importer_path = "src/importer.py"
