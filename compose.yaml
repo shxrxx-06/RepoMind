@@ -1,0 +1,49 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      DATA_DIR: /data
+      REPOSITORIES_DIR: /data/repos
+      TEMP_DIR: /data/tmp
+      HF_HOME: /data/huggingface
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_MOCK_RESPONSE: ${LLM_MOCK_RESPONSE:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      LLM_REQUEST_TIMEOUT: ${LLM_REQUEST_TIMEOUT:-30}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-1}
+      MAX_REPOSITORY_FILES: ${MAX_REPOSITORY_FILES:-10000}
+      CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost","http://127.0.0.1"]}'
+    volumes:
+      - repomind-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    ports:
+      - "${REPOMIND_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  repomind-data:

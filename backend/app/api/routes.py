@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, HttpUrl
+from starlette.concurrency import run_in_threadpool
 
 from backend.app.core.config import settings
 from backend.app.graph.models import RepositoryAnalysisResult
@@ -329,8 +330,8 @@ async def upload_repository(file: UploadFile = File(...)) -> dict:  # noqa: B008
                 if size > limit:
                     raise HTTPException(413, "ZIP exceeds the upload size limit")
                 temp.write(chunk)
-        repository_path = extract_repository_zip(temp_path)
-        metadata = scan_repository(repository_path)
+        repository_path = await run_in_threadpool(extract_repository_zip, temp_path)
+        metadata = await run_in_threadpool(scan_repository, repository_path)
         response = {
             "message": "Repository uploaded and ingested successfully",
             "repository_id": repository_path.name,
@@ -340,16 +341,16 @@ async def upload_repository(file: UploadFile = File(...)) -> dict:  # noqa: B008
         return response
     except HTTPException:
         if repository_path:
-            shutil.rmtree(repository_path, ignore_errors=True)
+            await run_in_threadpool(shutil.rmtree, repository_path, ignore_errors=True)
         raise
     except ValueError as exc:
         if repository_path:
-            shutil.rmtree(repository_path, ignore_errors=True)
+            await run_in_threadpool(shutil.rmtree, repository_path, ignore_errors=True)
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         logger.exception("ZIP repository ingestion failed")
         if repository_path:
-            shutil.rmtree(repository_path, ignore_errors=True)
+            await run_in_threadpool(shutil.rmtree, repository_path, ignore_errors=True)
         raise HTTPException(500, "Unable to process repository ZIP") from exc
     finally:
         await file.close()
